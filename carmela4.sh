@@ -4,14 +4,14 @@
 
 if [ "$(id -u)" -ne "0" ] # Jezeli nie jest zalogowany jako root.
 then
-   echo "[*] Carmela 2 to narzedzie do przywracania wszystkich keyspace'ow Cassandry z danej migawki."
+   echo "[*] Carmela 4 to narzedzie do przywracania wszystkich keyspace'ow Cassandry z danego katalogu z kopia zapasowa."
 
    echo "[!] Nie jestes zalogowany jako root!"
 
    exit 1 # Wyjscie z kodem bledu.
 fi
 
-while getopts :d:s:c:h argument; do
+while getopts :d:b:c:h argument; do
   case $argument in
       d)
 	 # Katalog z keyspace'ami.
@@ -19,10 +19,10 @@ while getopts :d:s:c:h argument; do
          keyspace_home=$OPTARG
 
          ;;
-      s)
-         # Numer migawki.
+      b)
+         # Katalog z danymi kopii zapasowej (do odzyskania).
 
-         snapshot_no=$OPTARG
+         data=$OPTARG
 
          ;;
       c)
@@ -32,15 +32,15 @@ while getopts :d:s:c:h argument; do
 
          ;;
       h)
-         echo "[*] Carmela 2 to narzedzie do przywracania wszystkich keyspace'ow Cassandry z danej migawki."
+         echo "[*] Carmela 4 to narzedzie do przywracania wszystkich keyspace'ow Cassandry z danego katalogu z kopia zapasowa."
 
-         echo "[*] Wywolanie: \"$0 -d sciezka_do_katalogu_z_keyspace'ami -s numer_migawki -c katalog_commitlog\"."
+         echo "[*] Wywolanie: \"$0 -d sciezka_do_katalogu_z_keyspace'ami -b sciezka_do_katalogu_z_danymi_kopii_zapasowej -c katalog_commitlog\"."
 
          exit 1
 
          ;;
       \?)
-         echo "[!] Nieznana opcja. Wywolanie: \"$0 -d sciezka_do_katalogu_z_keyspace'ami -s numer_migawki -c katalog_commitlog\"!"
+         echo "[!] Nieznana opcja. Wywolanie: \"$0 -d sciezka_do_katalogu_z_keyspace'ami -b sciezka_do_katalogu_z_danymi_kopii_zapasowej -c katalog_commitlog\"!"
 
          ;;
    esac
@@ -137,38 +137,64 @@ do
 
             # Wykonaj dzialania na tabeli (przywracanie kopii zapasowej).
 
-            # Odnajdz katalog z numerem migawki.
-
-            if [ ! -d "$keyspace_home/$keyspace/$table_directory/snapshots/$snapshot_no" ]
+            if [ ! -d "$data" ]
             then
-               echo "[*] Katalog \"$keyspace_home/$keyspace/$table_directory/snapshots/$snapshot_no\" z migawka nie istnieje. Sprawdzam inne mozliwosci."
+               echo "[!] Katalog \"$data\" z danymi kopii zapasowej nie istnieje."
 
-               if [ ! -d "$keyspace_home/$keyspace/$table_directory/snapshots/$snapshot_no-$table_name" ]
+               exit 1
+            fi
+
+            # Przejdz po wszystkich tabelach w danej przestrzeni z kopii zapasowej.
+
+            backup_table_directories=$(ls -t "$data/$keyspace/") # Wyswietl wszystkie katalogi tabel dla danej przestrzeni z kopii zapasowej poczawszy od najmlodszych.
+            backup_check_tables=() # Inicjalizacja tabeli przechowujacej nazwy tabel danej przestrzeni z kopii zapasowej.
+
+            for backup_table_directory in $backup_table_directories
+            do
+               # Wyodrebnij nazwe tabeli z kopii zapasowej.
+
+               backup_table_name=$(echo "$backup_table_directory" | awk -F'-' '{print $1}')
+
+               # Sprawdz czy nazwa tabeli z kopii zapasowej jest na liscie.
+
+               backup_flag=0 # Poczatkowa wartosc nieprawdy czyli, ze nazwy tabeli z kopii zapasowej nie ma na liscie.
+
+               if [ ${#backup_check_tables[@]} -ne 0 ] # Jezeli tablica nie jest pusta.
                then
-                  echo "[!] Dla tabeli \"$table_name\" w przestrzeni \"$keyspace\" nie znaleziono katalogu z podanym numerem migawki!"
-
-                  exit 1
-               else
-                  snapshot_directory="$keyspace_home/$keyspace/$table_directory/snapshots/$snapshot_no-$table_name"
+                  for backup_iterator in "${backup_check_tables[@]}"
+                  do
+                     if [ "$backup_table_name" == "$backup_iterator" ] # Jezeli jest na liscie.
+                     then
+                        backup_flag=1 # Ustaw flage na prawde.
+                     fi
+                  done
                fi
-            else
-               snapshot_directory="$keyspace_home/$keyspace/$table_directory/snapshots/$snapshot_no"
-            fi
 
-            # Sprawdz czy w katalogu z migawka sa pliki o rozszerzeniu "db".
+               if [ $backup_flag -ne 1 ]
+               then
+                  backup_check_tables+=("$backup_table_name") # Jezeli nie ma to dodaj do listy.
 
-            mapfile -t count_db_files < <(find "$snapshot_directory" -maxdepth 1 -name "*.db")
+                  if [ "$table_name" == "$backup_table_name" ]
+                  then
+                     echo "[*] Tabela kopii zapasowej: $backup_table_name (katalog: $backup_table_directory)."
 
-            if [ ${#count_db_files[@]} -gt 0 ] # Jezeli sa tam jakies pliki o rozszerzeniu "db".
-            then
-               # Przywracamy kopie zapasowa.
+                     # Docelowe przywracanie kopii zapasowej.
 
-               rm -fr "$keyspace_home/$keyspace/$table_directory"/*.db
+                     # Sprawdz czy w danym katalogu sa jakies pliki z rozszerzeniem "db".
 
-               cp "$snapshot_directory"/*.db "$keyspace_home/$keyspace/$table_directory/"
+                     mapfile -t count_db_files < <(find "$data/$keyspace/$backup_table_directory" -maxdepth 1 -name "*.db")
 
-               chown cassandra:cassandra "$keyspace_home/$keyspace/$table_directory"/*
-            fi
+                     if [ ${#count_db_files[@]} -gt 0 ] # Jezeli sa tam jakies pliki o rozszerzeniu "db".
+                     then
+                        rm -fr "$keyspace_home/$keyspace/$table_directory"/*.db
+
+                        cp "$data/$keyspace/$backup_table_directory"/*.db "$keyspace_home/$keyspace/$table_directory/"
+
+                        chown cassandra:cassandra "$keyspace_home/$keyspace/$table_directory"/*
+                     fi
+                  fi
+               fi
+            done
          fi
       done
    fi

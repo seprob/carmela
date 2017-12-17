@@ -2,14 +2,16 @@
 
 # Sprawdz czy uzytkownik jest rootem.
 
-if [ $(id -u) -ne "0" ] # Jezeli nie jest zalogowany jako root.
+if [ "$(id -u)" -ne "0" ] # Jezeli nie jest zalogowany jako root.
 then
+   echo "[*] Carmela 1 to narzedzie do przywracania tylko jednej lub kilku roznych tabel lub keyspace'ow Cassandry z kopii zapasowej."
+
    echo "[!] Nie jestes zalogowany jako root!"
 
    exit 1 # Wyjscie z kodem bledu.
 fi
 
-while getopts :k:t:d:b:h argument; do
+while getopts :k:t:d:b:c:h argument; do
    case $argument in
       k)
          # Nazwa przestrzeni.
@@ -24,25 +26,33 @@ while getopts :k:t:d:b:h argument; do
 
          ;;
       d)
-         # Katalog z danymi kopii zapasowej (do odzyskania).
+         # Katalog z keyspace'ami.
+
+         keyspace_home=$OPTARG
+
+         ;;
+      b)
+	 # Katalog z danymi kopii zapasowej (do odzyskania).
 
          data=$OPTARG
 
          ;;
-      b)
-         # Katalog domowy bazy danych.
+      c)
+         # Katalog "commitlog".
 
-         database_home=$OPTARG
+         commitlog_directory=$OPTARG
 
          ;;
       h)
-         echo "[*] Wywolanie: \"$0 -k nazwa_przestrzeni -t nazwa_tabeli -d sciezka_do_katalogu_z_danymi -b katalog_domowy_bazy_danych\"."
+         echo "[*] Carmela 1 to narzedzie do przywracania tylko jednej lub kilku roznych tabel lub keyspace'ow Cassandry z kopii zapasowej."
+
+         echo "[*] Wywolanie: \"$0 -k nazwa_przestrzeni -t nazwa_tabeli -d sciezka_do_katalogu_z_keyspace'ami -b sciezka_do_katalogu_z_danymi_kopii_zapasowej -c katalog_commitlog\"."
 
          exit 1
 
          ;;
       \?)
-         echo "[!] Nieznana opcja (wywolanie: \"$0 -k nazwa_przestrzeni -t nazwa_tabeli -d sciezka_do_katalogu_z_danymi -b katalog_domowy_bazy_danych\")!"
+         echo "[!] Nieznana opcja (wywolanie: \"$0 -k nazwa_przestrzeni -t nazwa_tabeli -d sciezka_do_katalogu_z_keyspace'ami -b sciezka_do_katalogu_z_danymi_kopii_zapasowej -c katalog_commitlog\")!"
 
          ;;
    esac
@@ -52,18 +62,16 @@ shift $((OPTIND-1)) # Powiedz getopts aby przeszedl do nastepnego argumentu.
 
 # Sprawdz czy katalog domowy bazy danych istnieje.
 
-if [ ! -d "$database_home" ]
+if [ ! -d "$keyspace_home" ]
 then
-   echo "[!] Katalog bazy danych Cassandry \"$database_home\" nie istnieje."
+   echo "[!] Katalog z keyspace'ami Cassandry \"$keyspace_home\" nie istnieje."
 
    exit 1
 fi
 
 # Sprawdz czy podana przestrzen istnieje.
 
-ls $database_home/data | grep -w $keyspace > /dev/null
-
-if [ $? -ne 0 ]
+if [ ! -d "$keyspace_home/$keyspace" ]
 then
    echo "[!] Podana przestrzen nie istnieje!"
 
@@ -72,7 +80,7 @@ fi
 
 # Sprawdz czy podana tabela istnieje (pobierz ostatni stworzony katalog z przedroskiem nazwy tabeli).
 
-table_directory=`ls -t $database_home/data/$keyspace | grep ^$table- | head -1`
+table_directory=$(ls -t "$keyspace_home/$keyspace" | grep ^$table- | head -1)
 
 if [ $? -ne 0 ]
 then
@@ -92,64 +100,46 @@ fi
 
 # Sprawdz czy Cassandra jest uruchomiona.
 
-status=`service cassandra status`
-
-if [ "$status" == " * Cassandra is running" ]
+if nodetool status > /dev/null 2>&1
 then
    read -r -p "[?] Czy chcesz zatrzymac Cassandre (pozostanie wylaczona po zakonczeniu dzialania program)? Odpowiedz \"t\" lub \"n\": " response
 
    case $response in
       t)
          service cassandra stop > /dev/null # Zatrzymaj Cassandre.
+
          ;;
       *)
          echo "[!] Cassandra musi byc wylaczona aby wgrac kopie zapasowa!"
 
          exit 1
+
          ;;
    esac
 fi
 
 # Usun "commitlog".
 
-if [ ! -d "$database_home/commitlog" ]
+if [ ! -d "$commitlog_directory" ]
 then
-   echo "[*] Katalog \"$database_home/commitlog\" nie istnieje. Sprawdzam w katalogu wyzej."
+   echo "[!] Katalog commitlog \"$commitlog_directory\" nie istnieje."
 
-   upper_directory=`cd $database_home; cd ..; pwd`
-
-   # Sprawdz czy katalog wyzej to "cassandra".
-
-   cd $database_home; cd ..
-
-   current_directory=${PWD##*/} # Pobierz nazwe aktualnego katalogu (bez pelnej sciezki).
-
-   if [ "$current_directory" = "cassandra" ]
-   then
-      if [ ! -d "$upper_directory/commitlog" ]
-      then
-         echo "[!] Katalog \"$upper_directory/commitlog\" nie istnieje!"
-
-         exit 1
-      else
-         rm -fr $upper_directory/commitlog
-      fi
-   fi
+   exit 1
 else
-   rm -fr $database_home/commitlog/*
+   rm -fr "${commitlog_directory:?}/"*
 fi
 
 # Sprawdz czy w katalogu z migawka sa pliki o rozszerzeniu "db".
 
-count_db_files=(`find $data -maxdepth 1 -name "*.db"`)
+mapfile -t count_db_files < <(find "$data" -maxdepth 1 -name "*.db")
 
 if [ ${#count_db_files[@]} -gt 0 ] # Jezeli sa tam jakies pliki o rozszerzeniu "db".
 then
    # Przywracamy kopie zapasowa.
 
-   rm -fr $database_home/data/$keyspace/$table_directory/*.db
+   rm -fr "$keyspace_home/$keyspace/$table_directory"/*.db
 
-   cp $data/*.db $database_home/data/$keyspace/$table_directory/
+   cp "$data"/*.db "$keyspace_home/$keyspace/$table_directory/"
 
-   chown cassandra:cassandra $database_home/data/$keyspace/$table_directory/*
+   chown cassandra:cassandra "$keyspace_home/$keyspace/$table_directory"/*
 fi
